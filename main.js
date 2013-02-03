@@ -72,7 +72,6 @@ define(function (require, exports, module) {
 						} else {
 							//remove < and > if in the selection
 							sel = sel.replace(/[<>]/g,"");
-							console.log("let's try "+sel);
 							resultdiv.html("<p>Looking up "+sel+"</p>");
 
 							var tagData = lscache.get(LS_TAG_DATA);
