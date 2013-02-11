@@ -23,30 +23,99 @@
 
 /*jslint vars: true, plusplus: true, devel: true, nomen: true, regexp: true, indent: 4, maxerr: 50, white: true */
 /*global define, brackets, lscache, $ */
-
 define(function (require, exports, module) {
-		'use strict';
-
-    var
-        mainHtml     = require("text!templates/display.html");
-		
-    var Commands                = brackets.getModule("command/Commands"),
+    'use strict';
+    
+    // Brackets modules
+    var EditorManager           = brackets.getModule("editor/EditorManager"),
+        ProjectManager          = brackets.getModule("project/ProjectManager"),
+        KeyBindingManager       = brackets.getModule("command/KeyBindingManager"),
         CommandManager          = brackets.getModule("command/CommandManager"),
-        EditorManager           = brackets.getModule("editor/EditorManager"),
-        DocumentManager         = brackets.getModule("document/DocumentManager"),
-        NativeFileSystem        = brackets.getModule("file/NativeFileSystem").NativeFileSystem,
-        FileUtils               = brackets.getModule("file/FileUtils"),
-        ExtensionUtils          = brackets.getModule("utils/ExtensionUtils"),
-        Menus                   = brackets.getModule("command/Menus"),
-        Resizer                 = brackets.getModule("utils/Resizer");
-
-    //commands
-    var VIEW_HIDE_MDNLOOKUP = "mdnlookup.run";
-
+        Commands                = brackets.getModule("command/Commands"),
+        Menus                   = brackets.getModule("command/Menus");
+    
+    // Local modules
     require("lscache");
+    
+    var HtmlViewer         = require("HtmlViewer");
+    var tagData = {};
+    var editor;
+    var contextMenu = Menus.getContextMenu(Menus.ContextMenuIds.EDITOR_MENU);
+    var COMMAND_ID = "com.digitalbackcountry.mdnextension";
+    
+    /* Register the commands */
+    CommandManager.register("MDN Lookup", COMMAND_ID, handleMDNLookup);
+    KeyBindingManager.addBinding(COMMAND_ID, "Shift-Ctrl-E");
+    
+    /* Add menus */
+    contextMenu.addMenuItem(COMMAND_ID);
 
-		var LS_TAG_DATA = 'MDNLookup-tagData';
-
+    
+    /**
+     * Return the token string that is at the specified position.
+     *
+     * @param hostEditor {!Editor} editor
+     * @param {!{line:Number, ch:Number}} pos
+     * @return {String} token string at the specified position
+     */
+    function _getStringAtPos(hostEditor, pos) {
+        var token = hostEditor._codeMirror.getTokenAt(pos);
+        
+        // If the pos is at the beginning of a name, token will be the
+        // preceding whitespace or dot. In that case, try the next pos.
+        if (token.string.trim().length === 0 || token.string === ".") {
+            token = hostEditor._codeMirror.getTokenAt({line: pos.line, ch: pos.ch + 1});
+        }
+        
+        if (token.className === "tag") {
+            var string = token.string.replace('<', '').replace('>', '');
+            return string;
+        }
+        
+        return "";
+    }
+    
+    /**
+     * This creates an inline editor when the cursor is on a valid HTML tag
+     *
+     * @param {!Editor} editor
+     * @param {!{line:Number, ch:Number}} pos
+     * @return {$.Promise} a promise that will be resolved with an InlineWidget
+     *      or null if we're not going to provide anything.
+     */
+    function inlineMDNLookup(hostEditor, pos) {
+        if (hostEditor._codeMirror.getOption("mode") !== "htmlmixed" && hostEditor._codeMirror.getOption("mode") !== "html") {
+            return null;
+        }
+      
+        // Only provide lookup if the selection is within a single line
+        var sel = hostEditor.getSelection(false);
+        if (sel.start.line !== sel.end.line) {
+            return null;
+        }
+        
+        // how to grab current word?
+        // Always use the selection start for determining the image file name. The pos
+        // parameter is usually the selection end.
+        var tagName = _getStringAtPos(hostEditor, hostEditor.getSelection(false).start);
+        if (tagName === "") {
+            return null;
+        }
+        if (!tagData[tagName]) {
+            return null;
+        }
+        // Check that its a valid HTML tag name, hard code URLs to MDN or caniuse?
+        var result = new $.Deferred();
+        
+        var header = '<a target="_blank" href="' + tagData[tagName].url + '">MDN: ' + tagName + '</a>';
+        var html   = tagData[tagName].sectionHTMLs.join('');
+        var viewer = new HtmlViewer(header, html);
+        viewer.load(hostEditor);
+        
+        // open up a new inline editor window with the MDN content
+        editor.addInlineWidget(editor.getSelection(false).start,viewer);
+    }
+    
     function loadJSON(scriptUrl, callback) {
       $.ajax({
         url: scriptUrl,
@@ -54,88 +123,22 @@ define(function (require, exports, module) {
         success: callback
       });
     }
-
-    function _handleShowMDNLookup() {
-        var $mdnlookup = $("#mdnlookup");
-        
-        if ($mdnlookup.css("display") === "none") {
-            $mdnlookup.show();
-            CommandManager.get(VIEW_HIDE_MDNLOOKUP).setChecked(true);
-
-            //see if we have something selected in the editor
-						var editor = EditorManager.getCurrentFullEditor();
-						var sel = editor.getSelectedText().trim();
-						var resultdiv = $("#mdnlookup_result");
-
-						if(sel === "") {
-							resultdiv.html("<p>To use MDN Lookup, please select an HTML tag.</p>");
-						} else {
-							//remove < and > if in the selection
-							sel = sel.replace(/[<>]/g,"");
-							resultdiv.html("<p>Looking up "+sel+"</p>");
-
-							var tagData = lscache.get(LS_TAG_DATA);
-							if (!tagData) {
-								tagData = {};
-								loadJSON('http://dochub.io/data/html-mdn.json', function(json) {  
-										var i;
-										for (i = 0; i < json.length; i++) {
-											tagData[json[i].title] = json[i];
-										}
-										lscache.set(LS_TAG_DATA, tagData, 60*12);
-										tagLookup(tagData, sel);
-								});
-							} else {
-								tagLookup(tagData,sel);
-							}
-
-						}
-
-        } else {
-            $mdnlookup.hide();
-            CommandManager.get(VIEW_HIDE_MDNLOOKUP).setChecked(false);
-        }
-        EditorManager.resizeEditor();
-    }
-
-    function tagLookup(data,tag) {
-    	if(data[tag]) {
-				var result = "";
-				for(var i=0; i<data[tag].sectionHTMLs.length; i++) {
-					result += data[tag].sectionHTMLs[i];
-				}
-				$("#mdnlookup_result").html(result);
-    	} else {
-				$("#mdnlookup_result").html("<p>Sorry, this tag wasn't found.</p>");
-    	}
-    }
-
-    CommandManager.register("MDN Lookup", VIEW_HIDE_MDNLOOKUP, _handleShowMDNLookup);
-
-    function init() {
-        
-        ExtensionUtils.loadStyleSheet(module, "mdnlookup.css");
-
-        //add the HTML UI
-        var s = Mustache.render(mainHtml);
-        $(s).insertBefore("#status-bar");
-
-        $('#mdnlookup').hide();
-        
-        var menu = Menus.getMenu(Menus.AppMenuBar.VIEW_MENU);
-        menu.addMenuItem(VIEW_HIDE_MDNLOOKUP, "", Menus.AFTER, Commands.VIEW_HIDE_SIDEBAR);
-
-        $('#mdnlookup .close').click(function () {
-            CommandManager.execute(VIEW_HIDE_MDNLOOKUP);
-        });
-
-        // AppInit.htmlReady() has already executed before extensions are loaded
-        // so, for now, we need to call this ourself
-        Resizer.makeResizable($('#mdnlookup').get(0), "vert", "top", 200);
+    
+    var LS_TAG_DATA = 'MDNLookup-tagData';
+    tagData = lscache.get(LS_TAG_DATA);
+    if (!tagData) {
+      tagData = {};
+      loadJSON('http://dochub.io/data/html-mdn.json', function(json) {
+          var i;
+          for (i = 0; i < json.length; i++) {
+              tagData[json[i].title] = json[i];
+          }
+          lscache.set(LS_TAG_DATA, tagData, 60*12);
+      });
     }
     
-    init();
-
+    function handleMDNLookup() {
+        editor = EditorManager.getCurrentFullEditor();
+        inlineMDNLookup(editor);
+    }
 });
-
-
