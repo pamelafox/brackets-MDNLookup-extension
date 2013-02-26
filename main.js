@@ -101,6 +101,14 @@ define(function (require, exports, module) {
         if (tagName === "") {
             return null;
         }
+
+        /*
+        Discovered h1-h6 didn't work. That's because they are stored as tagname = "Heading elements";
+        */
+        if(["h1","h2","h3","h4","h5","h6"].indexOf(tagName) >= 0) {
+          tagName = "Heading elements";
+        }
+
         if (!tagData[tagName]) {
             return null;
         }
