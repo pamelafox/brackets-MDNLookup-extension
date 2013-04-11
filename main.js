@@ -84,8 +84,14 @@ define(function (require, exports, module) {
      *      or null if we're not going to provide anything.
      */
     function inlineMDNLookup(hostEditor, pos) {
-        if (hostEditor._codeMirror.getOption("mode") !== "htmlmixed" && hostEditor._codeMirror.getOption("mode") !== "html") {
-            return null;
+        if (hostEditor.getLanguageForSelection) {  // sprint 21+
+            if (hostEditor.getLanguageForSelection().getId() !== "html") {
+                return null;
+            }
+        } else {  // older sprints
+            if (hostEditor.getModeForSelection() !== "htmlmixed" && hostEditor.getModeForSelection() !== "html") {
+                return null;
+            }
         }
       
         // Only provide lookup if the selection is within a single line
